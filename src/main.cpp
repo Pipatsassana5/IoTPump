@@ -34,7 +34,7 @@ const long updateInterval = 3000; // ส่งข้อมูลทุก 3 ว�
 unsigned long lastWaterUsageTime = 0;       // เวลาที่มีการใช้น้ำครั้งล่าสุด
 unsigned long calibrationStartTime = 0;     // เวลาเริ่ม Calibration
 unsigned long lastPressureIncreaseTime = 0; // เวลาที่แรงดันเพิ่มขึ้นล่าสุดตอน Calibrate
-const unsigned long NO_USAGE_DELAY = 600000; // 10 นาที (600,000 ms) สำหรับทดสอบอาจจะปรับลดลงก่อน
+const unsigned long NO_USAGE_DELAY = 5000; // 10 นาที (600,000 ms) สำหรับทดสอบอาจจะปรับลดลงก่อน
 float lastLeakCheckPressure = 0.0;
 unsigned long lastLeakCheckTime = 0;
 
@@ -110,6 +110,15 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
 
+  if (Serial.available() > 0) {
+    char cmd = Serial.read();
+    if (cmd == 'c' || cmd == 'C') {
+      startAutoCalibration(); // พิมพ์ 'c' เพื่อจำลองการกดปุ่ม Calibrate บนแอป
+    }
+    // เคลียร์ buffer ป้องกันการอ่านซ้ำ
+    while(Serial.available() > 0) Serial.read(); 
+  }
+
   if (currentMillis - lastSensorRead >= 100) { // อ่านเซนเซอร์ทุก 100ms
     float currentPressure = readPressureSensor();
     
@@ -135,7 +144,9 @@ void loop() {
   // ส่วนของการส่งข้อมูลขึ้น GAS ให้เพิ่มสถานะ isLeakDetected เข้าไปด้วย
   if (currentMillis - lastGasUpdate >= updateInterval) {
     sendDataToGAS(readPressureSensor(), pumpStatus, valveStatus, isLeakDetected);
+    printDebugStatus(readPressureSensor());
     lastGasUpdate = currentMillis;
+    
   }
 }
 
@@ -303,4 +314,32 @@ void runAutoCalibration(float currentPressure, unsigned long currentMillis) {
     Serial.print("New Max Pressure Ref (100%): ");
     Serial.println(maxPressureRef);
   }
+}
+
+void printDebugStatus(float currentPressure) {
+  Serial.print("Pressure: "); 
+  Serial.print(currentPressure, 2); // แสดงทศนิยม 2 ตำแหน่ง
+  Serial.print(" Bar | ");
+  
+  if (maxPressureRef > 0) {
+    float pct = (currentPressure / maxPressureRef) * 100.0;
+    Serial.print(pct, 0); Serial.print("% | ");
+  } else {
+    Serial.print("No Ref | ");
+  }
+
+  Serial.print("PUMP: "); Serial.print(pumpStatus ? "ON " : "OFF");
+  Serial.print(" | VALVE: "); Serial.print(valveStatus ? "OPEN  " : "CLOSE");
+  
+  Serial.print(" | STATE: ");
+  if (isCalibrating) {
+    Serial.print("Calibrating...");
+  } else if (isWaterBeingUsed) {
+    Serial.print("Using Water");
+  } else if (isLeakDetected) {
+    Serial.print("!!! LEAK DETECTED !!!");
+  } else {
+    Serial.print("Standby");
+  }
+  Serial.println();
 }
