@@ -12,7 +12,7 @@
 // --- Configuration ---
 const char* ssid = "Wokwi-GUEST";
 const char* password = "";
-String gasUrl = "YOUR_GOOGLE_WEB_APP_URL"; 
+String gasUrl = "https://script.google.com/macros/s/AKfycbzxd-elUaq_7YNwkqoTlneEdN6kJbWHb4G6j9GJu1584U5GlLckEWTlZmBYvd4N2ME2jQ/exec"; 
 
 // --- Pins ---
 const int SENSOR_PIN = 32;
@@ -141,7 +141,7 @@ void loop() {
     lastSensorRead = currentMillis;
   }
 
-  // ส่วนของการส่งข้อมูลขึ้น GAS ให้เพิ่มสถานะ isLeakDetected เข้าไปด้วย
+  // ส่วนของการส่งข้อมูลขึ้น GAS 
   if (currentMillis - lastGasUpdate >= updateInterval) {
     sendDataToGAS(readPressureSensor(), pumpStatus, valveStatus, isLeakDetected);
     printDebugStatus(readPressureSensor());
@@ -256,17 +256,41 @@ void sendDataToGAS(float pressure, bool pump, bool valve, bool leak) {
     http.end();
   }
 }
-
 void fetchSettingsFromGAS() {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     String url = gasUrl + "?action=getSettings";
+    
     http.begin(url);
+    // Google API มักจะมีการ redirect (HTTP 302) ต้องตั้งค่าให้มันตาม redirect ไปด้วย
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS); 
+    
     int httpCode = http.GET();
-    if (httpCode > 0) {
+    if (httpCode == HTTP_CODE_OK) {
       String payload = http.getString();
-      // Parse JSON หรือ String ที่ได้มาเพื่ออัปเดตค่า 
-      // upperThresholdPct และ lowerThresholdPct
+      Serial.print("Settings Received from GAS: ");
+      Serial.println(payload); // ควรจะปริ้นออกมาเป็น "40,60"
+
+      // แยกข้อความด้วยเครื่องหมายลูกน้ำ (,)
+      int firstComma = payload.indexOf(',');
+        int secondComma = payload.indexOf(',', firstComma + 1);
+        
+        if (firstComma > 0 && secondComma > 0) {
+          lowerThresholdPct = payload.substring(0, firstComma).toInt();
+          upperThresholdPct = payload.substring(firstComma + 1, secondComma).toInt();
+          
+          String command = payload.substring(secondComma + 1);
+          command.trim(); // ตัดช่องว่างออก
+          
+          // ถ้าเจอคำสั่ง CALIBRATE ให้เรียกฟังก์ชันเริ่ม Calibrate ทันที!
+          if (command == "CALIBRATE" && !isCalibrating) {
+            Serial.println("Received command from Web: START CALIBRATION");
+            startAutoCalibration(); // เริ่มกระบวนการ Calibrate
+      }
+    }
+    } else {
+      Serial.print("Error GET Settings, HTTP Code: ");
+      Serial.println(httpCode);
     }
     http.end();
   }
