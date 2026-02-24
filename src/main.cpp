@@ -10,6 +10,7 @@
 #include <Preferences.h>
 #include <TFT_eSPI.h> // ไลบรารีสำหรับจอ TFT
 #include <SPI.h>
+#include ".env"
 
 TFT_eSPI tft = TFT_eSPI();
 
@@ -20,7 +21,6 @@ const long displayInterval = 500; // อัปเดตจอทุกๆ 0.5 �
 // --- Configuration ---
 const char* ssid = "Wokwi-GUEST";
 const char* password = "";
-String gasUrl = "https://script.google.com/macros/s/AKfycbzxd-elUaq_7YNwkqoTlneEdN6kJbWHb4G6j9GJu1584U5GlLckEWTlZmBYvd4N2ME2jQ/exec"; 
 
 // --- Pins ---
 const int SENSOR_PIN = 32;
