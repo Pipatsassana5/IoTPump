@@ -8,6 +8,14 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
+#include <TFT_eSPI.h> // ไลบรารีสำหรับจอ TFT
+#include <SPI.h>
+
+TFT_eSPI tft = TFT_eSPI();
+
+// ตัวแปรจับเวลาสำหรับอัปเดตหน้าจอ
+unsigned long lastDisplayUpdate = 0;
+const long displayInterval = 500; // อัปเดตจอทุกๆ 0.5 วินาที (ไม่ให้จอกะพริบ)
 
 // --- Configuration ---
 const char* ssid = "Wokwi-GUEST";
@@ -37,7 +45,8 @@ unsigned long lastPressureIncreaseTime = 0; // เวลาที่แรงด
 const unsigned long NO_USAGE_DELAY = 5000; // 10 นาที (600,000 ms) สำหรับทดสอบอาจจะปรับลดลงก่อน
 float lastLeakCheckPressure = 0.0;
 unsigned long lastLeakCheckTime = 0;
-
+unsigned long lastSettingsFetch = 0;
+const long fetchInterval = 5000; // ตั้งเวลาเช็คคำสั่งจากหน้าเว็บทุกๆ 5 วินาที (5000 ms)
 
 
 // --- States ---
@@ -91,69 +100,77 @@ float readPressureSensor() {
   return pressureBar;
 }
 
-void setup() {
-  Serial.begin(115200);
-  pinMode(PUMP_RELAY, OUTPUT);
-  pinMode(VALVE_RELAY, OUTPUT);
-  
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) { delay(500); }
-  
-  // โหลดค่า Calibration จาก Memory
-  preferences.begin("system_vars", false);
-  maxPressureRef = preferences.getFloat("max_pressure", 0.0);
-  
-  // ดึงค่า Setting เริ่มต้นจาก Google Sheets ทันทีที่เปิดเครื่อง
-  fetchSettingsFromGAS(); 
-}
-
-void loop() {
-  unsigned long currentMillis = millis();
-
-  if (Serial.available() > 0) {
-    char cmd = Serial.read();
-    if (cmd == 'c' || cmd == 'C') {
-      startAutoCalibration(); // พิมพ์ 'c' เพื่อจำลองการกดปุ่ม Calibrate บนแอป
-    }
-    // เคลียร์ buffer ป้องกันการอ่านซ้ำ
-    while(Serial.available() > 0) Serial.read(); 
-  }
-
-  if (currentMillis - lastSensorRead >= 100) { // อ่านเซนเซอร์ทุก 100ms
-    float currentPressure = readPressureSensor();
-    
-    // เช็คเซนเซอร์เสีย/ค้าง (Rule 1)
-    if (currentPressure < 0 || isnan(currentPressure)) {
-      Serial.println("ERROR: Sensor Fault!");
-      digitalWrite(PUMP_RELAY, LOW); 
-      digitalWrite(VALVE_RELAY, LOW);
-      pumpStatus = false;
-      valveStatus = false;
-      // ส่งแจ้งเตือน
-    } else {
-      // ประมวลผลลอจิก
-      if (isCalibrating) {
-        runAutoCalibration(currentPressure, currentMillis);
-      } else {
-        processControlLogic(currentPressure, currentMillis);
-      }
-    }
-    lastSensorRead = currentMillis;
-  }
-
-  // ส่วนของการส่งข้อมูลขึ้น GAS 
-  if (currentMillis - lastGasUpdate >= updateInterval) {
-    sendDataToGAS(readPressureSensor(), pumpStatus, valveStatus, isLeakDetected);
-    printDebugStatus(readPressureSensor());
-    lastGasUpdate = currentMillis;
-    
-  }
-}
-
 // ==========================================
 // ส่วนฟังก์ชันย่อย (Implementation)
 // ==========================================
+void updateDisplay(float currentPressure) {
+  // 1. ส่วนหัว (Header)
+  tft.setTextDatum(TL_DATUM); // จัดชิดซ้ายบน
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.drawString("PIPAT INTEGRATION", 5, 5, 2); // Font ขนาด 2
 
+  // 2. แสดงค่าแรงดันน้ำ (Pressure)
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("Pressure:", 5, 30, 4); // Font ขนาด 4
+  
+  // วาดกรอบทับตัวเลขเดิมก่อนพิมพ์ใหม่ ป้องกันตัวเลขซ้อนกัน
+  tft.fillRect(115, 30, 80, 30, TFT_BLACK); 
+  tft.drawFloat(currentPressure, 2, 115, 30, 4);
+  tft.drawString(" Bar", 190, 30, 4);
+
+  // 3. แสดงเปอร์เซ็นต์ (ถ้ามีค่าอ้างอิงแล้ว)
+  tft.fillRect(5, 60, 200, 20, TFT_BLACK); // เคลียร์บรรทัด %
+  if (maxPressureRef > 0) {
+    float pct = (currentPressure / maxPressureRef) * 100.0;
+    tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    tft.drawString("Level: " + String(pct, 0) + "% (Max: " + String(maxPressureRef, 1) + " Bar)", 5, 60, 2);
+  } else {
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.drawString("Need Calibration!", 5, 60, 2);
+  }
+
+  // 4. แสดงสถานะ ปั๊ม และ วาล์ว
+  tft.fillRect(5, 85, 230, 25, TFT_BLACK); // เคลียร์บรรทัดสถานะ
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("PUMP: ", 5, 85, 4);
+  
+  if (pumpStatus) {
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.drawString("ON ", 75, 85, 4);
+  } else {
+    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft.drawString("OFF", 75, 85, 4);
+  }
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("VALVE: ", 130, 85, 4);
+  
+  if (valveStatus) {
+    tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+    tft.drawString("OPEN ", 200, 85, 4);
+  } else {
+    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft.drawString("CLOSE", 200, 85, 4);
+  }
+
+  // 5. แถบสถานะระบบด้านล่างสุด (System State)
+  tft.fillRect(0, 115, 240, 20, TFT_BLACK); // เคลียร์บรรทัดล่างสุด
+  tft.setTextDatum(MC_DATUM); // กลับมาจัดกึ่งกลาง
+  
+  if (isCalibrating) {
+    tft.setTextColor(TFT_BLACK, TFT_YELLOW); // ตัวดำ พื้นเหลือง
+    tft.drawString(" CALIBRATING... ", 120, 125, 2);
+  } else if (isLeakDetected) {
+    tft.setTextColor(TFT_WHITE, TFT_RED); // ตัวขาว พื้นแดงเตือนภัย
+    tft.drawString(" !!! WATER LEAK DETECTED !!! ", 120, 125, 2);
+  } else if (isWaterBeingUsed) {
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.drawString(" Water is being used ", 120, 125, 2);
+  } else {
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.drawString(" System Standby ", 120, 125, 2);
+  }
+}
 void processControlLogic(float currentPressure, unsigned long currentMillis) {
   // หากกำลัง Calibrate อยู่ หรือยังไม่เคย Calibrate ให้ข้ามลอจิกนี้ไปก่อน
   if (isCalibrating || maxPressureRef <= 0.0) return;
@@ -256,6 +273,23 @@ void sendDataToGAS(float pressure, bool pump, bool valve, bool leak) {
     http.end();
   }
 }
+
+
+// ฟังก์ชันนี้ถูกเรียกเมื่อต้องการเริ่มการ Calibrate (เช่น สั่งจาก Web App หรือกดปุ่ม)
+void startAutoCalibration() {
+  Serial.println("--- Starting Auto Calibration ---");
+  isCalibrating = true;
+  tempMaxPressure = 0.0;
+  calibrationStartTime = millis();
+  lastPressureIncreaseTime = millis();
+  
+  // ปิดวาล์วและเปิดปั๊มเพื่ออัดแรงดันให้สุด
+  digitalWrite(VALVE_RELAY, LOW); 
+  valveStatus = false;
+  digitalWrite(PUMP_RELAY, HIGH); 
+  pumpStatus = true;
+}
+
 void fetchSettingsFromGAS() {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
@@ -295,22 +329,6 @@ void fetchSettingsFromGAS() {
     http.end();
   }
 }
-
-// ฟังก์ชันนี้ถูกเรียกเมื่อต้องการเริ่มการ Calibrate (เช่น สั่งจาก Web App หรือกดปุ่ม)
-void startAutoCalibration() {
-  Serial.println("--- Starting Auto Calibration ---");
-  isCalibrating = true;
-  tempMaxPressure = 0.0;
-  calibrationStartTime = millis();
-  lastPressureIncreaseTime = millis();
-  
-  // ปิดวาล์วและเปิดปั๊มเพื่ออัดแรงดันให้สุด
-  digitalWrite(VALVE_RELAY, LOW); 
-  valveStatus = false;
-  digitalWrite(PUMP_RELAY, HIGH); 
-  pumpStatus = true;
-}
-
 // ฟังก์ชันนี้จะถูกเรียกวนใน loop() ตลอดเวลาที่ isCalibrating == true
 void runAutoCalibration(float currentPressure, unsigned long currentMillis) {
   // หาค่าแรงดันสูงสุดที่ปั๊มทำได้
@@ -340,30 +358,86 @@ void runAutoCalibration(float currentPressure, unsigned long currentMillis) {
   }
 }
 
-void printDebugStatus(float currentPressure) {
-  Serial.print("Pressure: "); 
-  Serial.print(currentPressure, 2); // แสดงทศนิยม 2 ตำแหน่ง
-  Serial.print(" Bar | ");
+void setup() {
+  Serial.begin(115200);
+  pinMode(PUMP_RELAY, OUTPUT);
+  pinMode(VALVE_RELAY, OUTPUT);
+  // --- ตั้งค่าหน้าจอ TFT ---
+  tft.init();
+  tft.setRotation(1); // หมุนจอแนวนอน (ปุ่มอยู่ด้านขวา)
+  tft.fillScreen(TFT_BLACK); // ถมพื้นหลังสีดำ
   
-  if (maxPressureRef > 0) {
-    float pct = (currentPressure / maxPressureRef) * 100.0;
-    Serial.print(pct, 0); Serial.print("% | ");
-  } else {
-    Serial.print("No Ref | ");
+  tft.setTextColor(TFT_WHITE, TFT_BLACK); // ตัวอักษรสีขาว พื้นหลังสีดำ (ช่วยลบทับตัวเลขเก่าอัตโนมัติ)
+  tft.setTextDatum(MC_DATUM); // จัดกึ่งกลาง
+  
+  // แสดงหน้า Welcome Screen
+  tft.drawString("PIPAT INTEGRATION", 120, 50, 4); // ใช้ชื่อระบบของคุณเป็น Header
+  tft.drawString("Water Control System", 120, 80, 2);
+  delay(2000);
+  tft.fillScreen(TFT_BLACK); // เคลียร์จอเตรียมเข้าหน้าหลัก
+  
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { delay(500); }
+  
+  // โหลดค่า Calibration จาก Memory
+  preferences.begin("system_vars", false);
+  maxPressureRef = preferences.getFloat("max_pressure", 0.0);
+  
+  // ดึงค่า Setting เริ่มต้นจาก Google Sheets ทันทีที่เปิดเครื่อง
+  fetchSettingsFromGAS(); 
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  if (Serial.available() > 0) {
+    char cmd = Serial.read();
+    if (cmd == 'c' || cmd == 'C') {
+      startAutoCalibration(); // พิมพ์ 'c' เพื่อจำลองการกดปุ่ม Calibrate บนแอป
+    }
+    // เคลียร์ buffer ป้องกันการอ่านซ้ำ
+    while(Serial.available() > 0) Serial.read(); 
   }
 
-  Serial.print("PUMP: "); Serial.print(pumpStatus ? "ON " : "OFF");
-  Serial.print(" | VALVE: "); Serial.print(valveStatus ? "OPEN  " : "CLOSE");
-  
-  Serial.print(" | STATE: ");
-  if (isCalibrating) {
-    Serial.print("Calibrating...");
-  } else if (isWaterBeingUsed) {
-    Serial.print("Using Water");
-  } else if (isLeakDetected) {
-    Serial.print("!!! LEAK DETECTED !!!");
-  } else {
-    Serial.print("Standby");
+  if (currentMillis - lastSensorRead >= 100) { // อ่านเซนเซอร์ทุก 100ms
+    float currentPressure = readPressureSensor();
+    
+    // เช็คเซนเซอร์เสีย/ค้าง (Rule 1)
+    if (currentPressure < 0 || isnan(currentPressure)) {
+      Serial.println("ERROR: Sensor Fault!");
+      digitalWrite(PUMP_RELAY, LOW); 
+      digitalWrite(VALVE_RELAY, LOW);
+      pumpStatus = false;
+      valveStatus = false;
+      // ส่งแจ้งเตือน
+    } else {
+      // ประมวลผลลอจิก
+      if (isCalibrating) {
+        runAutoCalibration(currentPressure, currentMillis);
+      } else {
+        processControlLogic(currentPressure, currentMillis);
+      }
+    }
+    lastSensorRead = currentMillis;
   }
-  Serial.println();
+
+  // ส่วนของการส่งข้อมูลขึ้น GAS 
+  if (currentMillis - lastGasUpdate >= updateInterval) {
+    sendDataToGAS(readPressureSensor(), pumpStatus, valveStatus, isLeakDetected);
+    
+    lastGasUpdate = currentMillis;
+    
+  }
+ if (currentMillis - lastSettingsFetch >= fetchInterval) {
+    // ฟังก์ชันนี้จะคอยเช็คว่ามีคำสั่ง CALIBRATE หรือมีการเปลี่ยน 40-60% หรือไม่
+    fetchSettingsFromGAS(); 
+    lastSettingsFetch = currentMillis;
+  }
+
+if (currentMillis - lastDisplayUpdate >= displayInterval) {
+    // ส่งค่าแรงดันปัจจุบันไปวาดบนหน้าจอ
+    updateDisplay(readPressureSensor());
+    lastDisplayUpdate = currentMillis;
+  }
+  
 }
