@@ -4,14 +4,12 @@
 */
 
 
-#include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
-#include <TFT_eSPI.h> // ไลบรารีสำหรับจอ TFT
+#include <TFT_eSPI.h>
 #include <SPI.h>
 #include ".env"
-
 TFT_eSPI tft = TFT_eSPI();
 
 // ตัวแปรจับเวลาสำหรับอัปเดตหน้าจอ
@@ -19,8 +17,8 @@ unsigned long lastDisplayUpdate = 0;
 const long displayInterval = 500; // อัปเดตจอทุกๆ 0.5 วินาที (ไม่ให้จอกะพริบ)
 
 // --- Configuration ---
-const char* ssid = "Wokwi-GUEST";
-const char* password = "";
+const char* ssid = "NT wifi 1301-2.4G";
+const char* password = "0945509897";
 
 // --- Pins ---
 const int SENSOR_PIN = 32;
@@ -104,73 +102,69 @@ float readPressureSensor() {
 // ส่วนฟังก์ชันย่อย (Implementation)
 // ==========================================
 void updateDisplay(float currentPressure) {
-  // 1. ส่วนหัว (Header)
-  tft.setTextDatum(TL_DATUM); // จัดชิดซ้ายบน
-  tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.drawString("PIPAT INTEGRATION", 5, 5, 2); // Font ขนาด 2
-
+  tft.setTextDatum(TL_DATUM);
   // 2. แสดงค่าแรงดันน้ำ (Pressure)
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("Pressure:", 5, 30, 4); // Font ขนาด 4
+  tft.drawString("Pressure:", 5, 0, 1); 
   
   // วาดกรอบทับตัวเลขเดิมก่อนพิมพ์ใหม่ ป้องกันตัวเลขซ้อนกัน
-  tft.fillRect(115, 30, 80, 30, TFT_BLACK); 
-  tft.drawFloat(currentPressure, 2, 115, 30, 4);
-  tft.drawString(" Bar", 190, 30, 4);
+  tft.fillRect(65, 0, 60, 15, TFT_BLACK); 
+  tft.drawFloat(currentPressure, 2, 75, 0, 1);
+  tft.drawString(" Bar", 150, 0, 1);
 
   // 3. แสดงเปอร์เซ็นต์ (ถ้ามีค่าอ้างอิงแล้ว)
-  tft.fillRect(5, 60, 200, 20, TFT_BLACK); // เคลียร์บรรทัด %
+  tft.fillRect(0, 25, 240, 15, TFT_BLACK); // เคลียร์บรรทัด %
   if (maxPressureRef > 0) {
     float pct = (currentPressure / maxPressureRef) * 100.0;
     tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    tft.drawString("Level: " + String(pct, 0) + "% (Max: " + String(maxPressureRef, 1) + " Bar)", 5, 60, 2);
+    tft.drawString("Level: " + String(pct, 0) + "% (Max: " + String(maxPressureRef, 1) + " Bar)", 5, 25, 1);
   } else {
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.drawString("Need Calibration!", 5, 60, 2);
+    tft.drawString("Need Learning!", 5, 25, 1);
   }
 
   // 4. แสดงสถานะ ปั๊ม และ วาล์ว
-  tft.fillRect(5, 85, 230, 25, TFT_BLACK); // เคลียร์บรรทัดสถานะ
+  tft.fillRect(0, 50, 240, 40, TFT_BLACK); // เคลียร์บรรทัดสถานะ
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("PUMP: ", 5, 85, 4);
+  tft.drawString("PUMP: ", 5, 50, 1);
   
   if (pumpStatus) {
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.drawString("ON ", 75, 85, 4);
+    tft.drawString("ON ", 65, 50, 1);
   } else {
     tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    tft.drawString("OFF", 75, 85, 4);
+    tft.drawString("OFF", 65, 50, 1);
   }
 
+ // สถานะวาล์ว
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("VALVE: ", 130, 85, 4);
-  
+  tft.drawString("VALVE: ", 5, 75, 1);
   if (valveStatus) {
     tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-    tft.drawString("OPEN ", 200, 85, 4);
+    tft.drawString("OPEN ", 75, 75, 1);
   } else {
     tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    tft.drawString("CLOSE", 200, 85, 4);
+    tft.drawString("CLOSE", 75, 75, 1);
   }
 
   // 5. แถบสถานะระบบด้านล่างสุด (System State)
-  tft.fillRect(0, 115, 240, 20, TFT_BLACK); // เคลียร์บรรทัดล่างสุด
-  tft.setTextDatum(MC_DATUM); // กลับมาจัดกึ่งกลาง
+  tft.fillRect(0, 100, 240, 20, TFT_BLACK); // เคลียร์บรรทัดล่างสุด
+  tft.setTextDatum(MC_DATUM); // เปลี่ยนมาจัดกึ่งกลางเฉพาะบรรทัดนี้
   
   if (isCalibrating) {
     tft.setTextColor(TFT_BLACK, TFT_YELLOW); // ตัวดำ พื้นเหลือง
-    tft.drawString(" CALIBRATING... ", 120, 125, 2);
+    tft.drawString(" Learning... ", 120, 105, 1);
   } else if (isLeakDetected) {
     tft.setTextColor(TFT_WHITE, TFT_RED); // ตัวขาว พื้นแดงเตือนภัย
-    tft.drawString(" !!! WATER LEAK DETECTED !!! ", 120, 125, 2);
+    tft.drawString(" !!! WATER LEAK DETECTED !!! ", 120, 105, 1);
   } else if (isWaterBeingUsed) {
     tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.drawString(" Water is being used ", 120, 125, 2);
+    tft.drawString(" Water is being used ", 120, 105, 1);
   } else {
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.drawString(" System Standby ", 120, 125, 2);
+    tft.drawString(" System Standby ", 120, 105, 1);
   }
-}
+} 
 void processControlLogic(float currentPressure, unsigned long currentMillis) {
   // หากกำลัง Calibrate อยู่ หรือยังไม่เคย Calibrate ให้ข้ามลอจิกนี้ไปก่อน
   if (isCalibrating || maxPressureRef <= 0.0) return;
@@ -205,7 +199,7 @@ void processControlLogic(float currentPressure, unsigned long currentMillis) {
     Serial.println("Water usage stopped: PUMP OFF");
   }
 
-  // -----------------------------------------------------------------
+  // ----------------------------------------------------------------se-
   // 2. ลอจิกควบคุมแรงดันเมื่อไม่มีการใช้น้ำ (Rule 4, 5, 6)
   // -----------------------------------------------------------------
   if (!isWaterBeingUsed && (currentMillis - lastWaterUsageTime >= NO_USAGE_DELAY)) {
@@ -363,20 +357,27 @@ void setup() {
   pinMode(PUMP_RELAY, OUTPUT);
   pinMode(VALVE_RELAY, OUTPUT);
   // --- ตั้งค่าหน้าจอ TFT ---
+  
+  pinMode(4, OUTPUT);
+  digitalWrite(4, HIGH);
   tft.init();
-  tft.setRotation(1); // หมุนจอแนวนอน (ปุ่มอยู่ด้านขวา)
-  tft.fillScreen(TFT_BLACK); // ถมพื้นหลังสีดำ
-  
-  tft.setTextColor(TFT_WHITE, TFT_BLACK); // ตัวอักษรสีขาว พื้นหลังสีดำ (ช่วยลบทับตัวเลขเก่าอัตโนมัติ)
-  tft.setTextDatum(MC_DATUM); // จัดกึ่งกลาง
-  
-  // แสดงหน้า Welcome Screen
-  tft.drawString("PIPAT INTEGRATION", 120, 50, 4); // ใช้ชื่อระบบของคุณเป็น Header
-  tft.drawString("Water Control System", 120, 80, 2);
-  delay(2000);
-  tft.fillScreen(TFT_BLACK); // เคลียร์จอเตรียมเข้าหน้าหลัก
-  
+  tft.setRotation(1);
+ 
+  tft.fillScreen(TFT_BLACK);
+
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.setTextSize(2);
+
+  tft.setCursor(10, 20);
+  tft.println("TTGO T-Display");
+
+  tft.setCursor(10, 50);
+  tft.println("ESP32 OK !");
+  tft.fillScreen(TFT_BLACK);
+
+  Serial.println("3. กำลังเชื่อมต่อ WiFi...");
   WiFi.begin(ssid, password);
+  Serial.println(ssid);
   while (WiFi.status() != WL_CONNECTED) { delay(500); }
   
   // โหลดค่า Calibration จาก Memory
@@ -405,10 +406,7 @@ void loop() {
     // เช็คเซนเซอร์เสีย/ค้าง (Rule 1)
     if (currentPressure < 0 || isnan(currentPressure)) {
       Serial.println("ERROR: Sensor Fault!");
-      digitalWrite(PUMP_RELAY, LOW); 
-      digitalWrite(VALVE_RELAY, LOW);
-      pumpStatus = false;
-      valveStatus = false;
+      
       // ส่งแจ้งเตือน
     } else {
       // ประมวลผลลอจิก
